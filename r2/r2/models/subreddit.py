@@ -50,7 +50,7 @@ from printable import Printable
 from r2.lib.db.userrel import UserRel, MigratingUserRel
 from r2.lib.db.operators import lower, or_, and_, not_, desc
 from r2.lib.errors import RedditError
-from r2.lib.geoip import location_by_ips
+from r2.lib.geoip import get_request_location
 from r2.lib.memoize import memoize
 from r2.lib.permissions import ModeratorPermissionSet
 from r2.lib.utils import (
@@ -94,35 +94,20 @@ def get_links_sr_ids(sr_ids, sort, time):
     return queries.merge_results(*results)
 
 
-def get_request_location():
+def get_user_location():
+    """
+    Determines country of origin for the current user via
+    geoip.get_request_location unless the user has opted into the global
+    default location.
+    """
     if c.location != '':
         # unset c attributes have the value ''
         return c.location
 
-    c.location = None
-
     if c.user and c.user.pref_use_global_defaults:
-        pass
-    elif getattr(request, 'via_cdn', False):
-        g.stats.simple_event('geoip.cdn_request')
-        edgescape_info = request.environ.get('HTTP_X_AKAMAI_EDGESCAPE')
-        if edgescape_info:
-            try:
-                items = edgescape_info.split(',')
-                location_dict = dict(item.split('=') for item in items)
-                c.location = location_dict.get('country_code', None)
-            except:
-                pass
-    elif getattr(request, 'ip', None):
-        g.stats.simple_event('geoip.non_cdn_request')
-        timer = g.stats.get_timer("providers.geoip.location_by_ips")
-        timer.start()
-        location = location_by_ips(request.ip)
-        if location:
-            c.location = location.get('country_code', None)
-        timer.stop()
+        return c.location
 
-    return c.location
+    return get_request_location(request, c)
 
 
 subreddit_rx = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_]{2,20}\Z")
@@ -418,12 +403,12 @@ class Subreddit(Thing, Printable, BaseSite):
     @classmethod
     def _by_name(cls, names, stale=False, _update = False):
         '''
-        Usages: 
+        Usages:
         1. Subreddit._by_name('funny') # single sr name
-        Searches for a single subreddit. Returns a single Subreddit object or 
+        Searches for a single subreddit. Returns a single Subreddit object or
         raises NotFound if the subreddit doesn't exist.
         2. Subreddit._by_name(['aww','iama']) # list of sr names
-        Searches for a list of subreddits. Returns a dict mapping srnames to 
+        Searches for a list of subreddits. Returns a dict mapping srnames to
         Subreddit objects. Items that were not found are ommitted from the dict.
         If no items are found, an empty dict is returned.
         '''
@@ -766,7 +751,7 @@ class Subreddit(Thing, Printable, BaseSite):
                 c.user_is_admin or self.is_moderator_with_perms(user, 'config'))
         else:
             return False
-    
+
     def parse_css(self, content, verify=True):
         from r2.lib import cssfilter
         from r2.lib.template_helpers import (
@@ -875,9 +860,9 @@ class Subreddit(Thing, Printable, BaseSite):
             return True
         elif c.user_is_loggedin:
             if self.type == 'gold_only':
-                return (user.gold or 
-                    user.gold_charter or 
-                    self.is_moderator(user) or 
+                return (user.gold or
+                    user.gold_charter or
+                    self.is_moderator(user) or
                     self.is_moderator_invite(user))
 
             return (self.is_contributor(user) or
@@ -984,7 +969,7 @@ class Subreddit(Thing, Printable, BaseSite):
                 item._ups = 0
 
             item.score_hidden = (
-                not item.can_view(user) or 
+                not item.can_view(user) or
                 item.hide_num_users_info
             )
 
@@ -1025,7 +1010,7 @@ class Subreddit(Thing, Printable, BaseSite):
     @classmethod
     def default_subreddits(cls, ids=True):
         """Return the subreddits a user with no subscriptions would see."""
-        location = get_request_location()
+        location = get_user_location()
         srids = LocalizedDefaultSubreddits.get_defaults(location)
 
         srs = Subreddit._byID(srids, data=True, return_dict=False, stale=True)
@@ -1138,7 +1123,7 @@ class Subreddit(Thing, Printable, BaseSite):
         """
         subreddits that appear in a user's listings. If the user has
         subscribed, returns the stored set of subscriptions.
-        
+
         limit - if it's Subreddit.DEFAULT_LIMIT, limits to 50 subs
                 (100 for gold users)
                 if it's None, no limit is used
@@ -1154,7 +1139,7 @@ class Subreddit(Thing, Printable, BaseSite):
                 limit = Subreddit.gold_limit
             else:
                 limit = Subreddit.sr_limit
-        
+
         # note: for user not logged in, the fake user account has
         # has_subscribed == False by default.
         if user and user.has_subscribed:
@@ -1309,7 +1294,7 @@ class Subreddit(Thing, Printable, BaseSite):
 
     def get_sticky_fullnames(self):
         """Return the fullnames of the Links stickied in the subreddit."""
-        
+
         # Note: This function is to ease the transition from a single sticky to
         # multiple. At some point in the future we can probably replace this
         # function with a simple usage of the sticky_fullnames attr.
@@ -1363,7 +1348,7 @@ class Subreddit(Thing, Printable, BaseSite):
                 sticky_fullnames.append(link._fullname)
 
             self.sticky_fullnames = sticky_fullnames
-            
+
         self._commit()
 
         if log_user:
@@ -1383,7 +1368,7 @@ class Subreddit(Thing, Printable, BaseSite):
             sticky_fullnames.remove(link._fullname)
         except ValueError:
             return
-        
+
         self.sticky_fullnames = sticky_fullnames
         self._commit()
 
@@ -1756,11 +1741,11 @@ class DefaultSR(_DefaultSR):
     @property
     def _should_wiki(self):
         return True
-    
+
     @property
     def wikimode(self):
         return self._base.wikimode if self._base else "disabled"
-    
+
     @property
     def wiki_edit_karma(self):
         return self._base.wiki_edit_karma
@@ -1771,17 +1756,17 @@ class DefaultSR(_DefaultSR):
 
     def is_wikicontributor(self, user):
         return self._base.is_wikicontributor(user)
-    
+
     def is_wikibanned(self, user):
         return self._base.is_wikibanned(user)
-    
+
     def is_wikicreate(self, user):
         return self._base.is_wikicreate(user)
-    
+
     @property
     def _fullname(self):
         return "t5_6"
-    
+
     @property
     def _id36(self):
         return self._base._id36
@@ -2536,7 +2521,7 @@ class DomainSR(FakeSubreddit):
         FakeSubreddit.__init__(self)
         domain = domain.lower()
         self.domain = domain
-        self.name = domain 
+        self.name = domain
         self.title = _("%(domain)s on %(reddit.com)s") % {
             "domain": domain, "reddit.com": g.domain}
         idn = domain.decode('idna')
@@ -2874,7 +2859,7 @@ def unmute_hook(data):
 
 class SubredditsActiveForFrontPage(tdb_cassandra.View):
     """Tracks which subreddits currently have valid frontpage posts.
-    
+
     The front page's "hot" page only includes posts that are newer than
     g.HOT_PAGE_AGE, so there's no point including subreddits in it if they
     haven't had a post inside that period. Since we pick random subsets of
