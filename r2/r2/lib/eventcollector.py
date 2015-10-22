@@ -34,6 +34,7 @@ from wsgiref.handlers import format_date_time
 
 import r2.lib.amqp
 from r2.lib import hooks
+from r2.lib.geoip import get_request_location
 from r2.lib.cache_poisoning import cache_headers_valid
 from r2.lib.utils import domain, epoch_timestamp, sampled, squelch_exceptions
 
@@ -342,7 +343,7 @@ class EventQueue(object):
         event.add("sr_id", subreddit._id)
         event.add("sr_name", subreddit.name)
 
-        # Due to the redirect, the request object being sent isn't the 
+        # Due to the redirect, the request object being sent isn't the
         # original, so referrer and action data is missing for certain events
         if request and (event_type == "quarantine_interstitial_view" or
                  event_type == "quarantine_opt_out"):
@@ -453,6 +454,14 @@ class EventV2(object):
 
     @classmethod
     def get_context_data(self, request, context):
+        """
+        Extracts data from the current request context which is common to
+        all events.  This is generally done explicitly in `__init__`, but
+        is done by hand for votes before the request context is lost by the
+        queuing.
+
+        request, context: Should be pylons.request & pylons.c respectively
+        """
         data = {}
 
         if context.user_is_loggedin:
@@ -467,6 +476,7 @@ class EventV2(object):
         if oauth2_client:
             data["oauth2_client_id"] = oauth2_client._id
 
+        data["geoip_country"] = get_request_location(request, context)
         data["domain"] = request.host
         data["user_agent"] = request.user_agent
 
